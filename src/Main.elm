@@ -165,7 +165,7 @@ update msg model =
             ( { model | playerName = Just name }, Cmd.none )
 
         AddToLeaderBoard ->
-            init |> Tuple.mapSecond (always (add model))
+            init |> Tuple.mapSecond (\cmd -> Cmd.batch [ cmd, add model ])
 
         AddToLeaderBoardResult _ ->
             ( model, Cmd.none )
