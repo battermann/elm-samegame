@@ -422,7 +422,7 @@ footer =
     Element.column
         [ Element.spacing 5, Element.width Element.fill, Font.size 16, Element.padding 10 ]
         [ Element.link [ Element.centerX ] { url = "http://elm-lang.org/", label = text "Created with Elm" }
-        , Element.el [ Element.centerX ] <| Element.link [] { url = "https://github.com/battermann/elm-samgegame", label = text "GitHub Source Code" }
+        , Element.el [ Element.centerX ] <| Element.link [] { url = "https://github.com/battermann/elm-samegame", label = text "GitHub Source Code" }
         ]
 
 
