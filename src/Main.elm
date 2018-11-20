@@ -14,6 +14,7 @@ import Html.Attributes as Attributes
 import Http
 import Json.Decode as Decode
 import MD5
+import Random
 import SameGame exposing (Block, BlockState(..), Board, Color(..), Column, Game(..), Position)
 import Task
 
@@ -53,11 +54,35 @@ type alias Window =
     }
 
 
+type GameType
+    = HighScoreGame Game
+    | RandomGame Game
+
+
+game : GameType -> Game
+game gameType =
+    case gameType of
+        HighScoreGame g ->
+            g
+
+        RandomGame g ->
+            g
+
+
+play : Position -> GameType -> GameType
+play position gameType =
+    case gameType of
+        HighScoreGame g ->
+            SameGame.play position g |> HighScoreGame
+
+        RandomGame g ->
+            SameGame.play position g |> RandomGame
+
+
 type alias Model =
-    { game : Game
+    { game : GameType
     , selectedBlocks : List Position
     , modal : Maybe Modal
-    , topTen : List String
     , playerName : Maybe String
     , highScores : RemoteData String (List HighScoreEntry)
     , window : Window
@@ -71,10 +96,9 @@ toMsg { viewport } =
 
 init : ( Model, Cmd Msg )
 init =
-    ( { game = SameGame.newGame 1
+    ( { game = HighScoreGame (SameGame.newGame 1)
       , selectedBlocks = []
       , modal = Nothing
-      , topTen = []
       , playerName = Nothing
       , highScores = NotAsked
       , window = Window 0 0
@@ -95,7 +119,7 @@ type alias HighScoreEntry =
 
 add : Model -> Cmd Msg
 add model =
-    Http.post "https://cors-anywhere.herokuapp.com/https://omgleaderboards.appspot.com/add" (Http.stringBody "application/x-www-form-urlencoded" (data (SameGame.score model.game) (model.playerName |> Maybe.withDefault ""))) (Decode.succeed "")
+    Http.post "https://cors-anywhere.herokuapp.com/https://omgleaderboards.appspot.com/add" (Http.stringBody "application/x-www-form-urlencoded" (data (SameGame.score (game model.game)) (model.playerName |> Maybe.withDefault ""))) (Decode.succeed "")
         |> Http.send AddToLeaderBoardResult
 
 
@@ -108,8 +132,8 @@ decodeHighScoreEntries =
     Decode.at [ "scores", "alltime" ] (Decode.list singleEntry)
 
 
-highscores : Cmd Msg
-highscores =
+highScores : Cmd Msg
+highScores =
     Http.get
         "https://cors-anywhere.herokuapp.com/https://omgleaderboards.appspot.com/get/71924738-62fe-4543-9d37-2e666bb27df8?timeframes=alltime&limit=10"
         decodeHighScoreEntries
@@ -130,30 +154,39 @@ type Msg
     | AddToLeaderBoard
     | AddToLeaderBoardResult (Result Http.Error String)
     | WindowResize Int Int
+    | RandomGameResult Game
+    | NewRandomGame
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
         Click position ->
-            ( { model | game = SameGame.play position model.game, selectedBlocks = [] }, Cmd.none )
+            ( { model | game = play position model.game, selectedBlocks = [] }, Cmd.none )
 
         SelectGroup position ->
-            ( { model | selectedBlocks = SameGame.groupPositions model.game position }, Cmd.none )
+            ( { model | selectedBlocks = SameGame.groupPositions (game model.game) position }, Cmd.none )
 
         Dialog (Just HighScores) ->
             case model.highScores of
                 Success scores ->
-                    ( { model | modal = Just HighScores, highScores = Reloading scores }, highscores )
+                    ( { model | modal = Just HighScores, highScores = Reloading scores }, highScores )
 
                 _ ->
-                    ( { model | modal = Just HighScores, highScores = Loading }, highscores )
+                    ( { model | modal = Just HighScores, highScores = Loading }, highScores )
 
         Dialog modal ->
             ( { model | modal = modal }, Cmd.none )
 
         NewGame ->
-            init
+            ( { model
+                | game = HighScoreGame (SameGame.newGame 1)
+                , selectedBlocks = []
+                , modal = Nothing
+                , playerName = Nothing
+              }
+            , Cmd.none
+            )
 
         HighScoresResult (Err _) ->
             ( { model | highScores = Failure "Http Error" }, Cmd.none )
@@ -165,13 +198,33 @@ update msg model =
             ( { model | playerName = Just name }, Cmd.none )
 
         AddToLeaderBoard ->
-            init |> Tuple.mapSecond (\cmd -> Cmd.batch [ cmd, add model ])
+            ( { model
+                | game = HighScoreGame (SameGame.newGame 1)
+                , selectedBlocks = []
+                , modal = Nothing
+                , playerName = Nothing
+              }
+            , add model
+            )
 
         AddToLeaderBoardResult _ ->
             ( model, Cmd.none )
 
         WindowResize width height ->
             ( { model | window = Window width height }, Cmd.none )
+
+        RandomGameResult g ->
+            ( { model
+                | game = RandomGame g
+                , selectedBlocks = []
+                , modal = Nothing
+                , playerName = Nothing
+              }
+            , Cmd.none
+            )
+
+        NewRandomGame ->
+            ( model, Random.generate (SameGame.newGame >> RandomGameResult) (Random.int -2147483648 2147483647) )
 
 
 
@@ -294,8 +347,8 @@ font =
 
 
 viewScore : Game -> Element Msg
-viewScore game =
-    case game of
+viewScore g =
+    case g of
         Finished gs ->
             Element.column [ Element.centerX, Element.width Element.fill ]
                 [ Element.el [ Element.centerX ] (text "No more moves")
@@ -324,7 +377,8 @@ viewHeader model =
         , Element.spacing spacing
         ]
         [ Element.el [ Font.size 40, Element.centerX ] (text "SameGame")
-        , Input.button [ Font.size fontSize, Element.centerX ] { label = text "New Game", onPress = Just NewGame }
+        , Input.button [ Font.size fontSize, Element.centerX ] { label = text "New Game", onPress = Just NewRandomGame }
+        , Input.button [ Font.size fontSize, Element.centerX ] { label = text "Game 1", onPress = Just NewGame }
         , Input.button [ Font.size fontSize, Element.centerX ] { label = text "Highscores", onPress = Just (Dialog (Just HighScores)) }
         , Input.button [ Font.size fontSize, Element.centerX ] { label = text "Rules", onPress = Just (Dialog (Just Rules)) }
         ]
@@ -332,10 +386,9 @@ viewHeader model =
 
 viewModalDialog : String -> Element Msg -> Element Msg
 viewModalDialog heading content =
-    Element.el [ Background.color (Element.rgb255 102 102 102), Element.centerX, Element.padding 10 ] (Element.column [ Element.spacing 20, Element.width Element.fill ] [ Element.el [ Element.centerX, Font.size 30 ] (text heading), content ])
+    Element.el [ Background.color (Element.rgb255 102 102 102), Element.centerX, Element.padding 20, Element.width Element.fill ] (Element.column [ Element.spacing 20, Element.width Element.fill ] [ Element.el [ Element.centerX, Font.size 30 ] (text heading), content ])
         |> Element.el
             [ Background.color (Element.rgba 0 0 0 0.5)
-            , Element.htmlAttribute (Attributes.style "z-index" "20")
             , Element.width Element.fill
             , Element.height Element.fill
             , Events.onClick (Dialog Nothing)
@@ -354,7 +407,7 @@ viewRules =
         , Element.paragraph [] [ text "The game ends when the board is either empty or the remaining blocks cannot be removed." ]
         , Element.paragraph [] [ text "Removing a group of n blocks will result in a score of (n-2)² points." ]
         , Element.paragraph [] [ text "If all blocks are removed from the board, the player will receive a bonus of 1000 points." ]
-        , Element.paragraph [] [ text "If the game ends without clearing the board, the player will receive a penalty. The penalty is computed according to (n-2)² where n is the]number of stones left on the board." ]
+        , Element.paragraph [] [ text "If the game ends without clearing the board, the player will receive a penalty. The penalty is computed according to (n-2)² where n is the number of stones left on the board." ]
         ]
 
 
@@ -362,7 +415,7 @@ viewSelectedDialog : Model -> Element Msg
 viewSelectedDialog model =
     case model.modal of
         Just HighScores ->
-            viewModalDialog "Top 10" (viewHighScores model)
+            viewModalDialog "Game 1 Highscores" (viewHighScores model)
 
         Just Rules ->
             viewModalDialog "SameGame Rules" viewRules
@@ -392,10 +445,20 @@ viewEnterName window name =
 
             else
                 Element.row
+
+        attributes =
+            [ Font.size 25, Element.padding 10, Element.width Element.fill, Element.centerX ]
+
+        button =
+            if name |> (not << String.isEmpty) then
+                Input.button (Background.color (Element.rgb255 80 80 80) :: attributes) { label = Element.el [ Element.centerX ] <| text "Submit Score", onPress = Just AddToLeaderBoard }
+
+            else
+                Element.el (Background.color (Element.rgb255 90 90 90) :: Font.color (Element.rgb255 150 150 150) :: attributes) (Element.el [ Element.centerX ] <| text "Submit Score")
     in
     el [ Element.spacing 20, Element.centerX, Element.width (Element.px (boardWidth window)) ]
         [ Input.username [ Font.color (Element.rgb255 102 102 102), Element.width Element.fill ] { onChange = NameInputChange, text = name, placeholder = Just (Input.placeholder [] (text "Enter your name")), label = Input.labelHidden "Name" }
-        , Input.button [ Font.size 25, Element.padding 10, Element.width Element.fill, Background.color (Element.rgb255 80 80 80) ] { label = Element.el [ Element.centerX ] <| text "Submit Score", onPress = Just AddToLeaderBoard }
+        , button
         ]
 
 
@@ -422,7 +485,7 @@ footer =
     Element.column
         [ Element.spacing 5, Element.width Element.fill, Font.size 16, Element.padding 10 ]
         [ Element.link [ Element.centerX ] { url = "http://elm-lang.org/", label = text "Created with Elm" }
-        , Element.el [ Element.centerX ] <| Element.link [] { url = "https://github.com/battermann/elm-samegame", label = text "GitHub Source Code" }
+        , Element.el [ Element.centerX ] <| Element.link [] { url = "https://github.com/battermann/elm-samegame", label = Element.row [] [ Element.el [ Element.centerX, Element.centerY ] (Element.html (Html.div [] [ Html.i [ Attributes.class "fab fa-github" ] [] ])), text " Source Code" ] }
         ]
 
 
@@ -433,16 +496,30 @@ viewMain model =
             round (toFloat model.window.width / 18) |> max 40
     in
     case model.game of
-        Finished _ ->
-            [ Element.el [ Element.centerX, Font.size fontSize ] (viewScore model.game)
-            , viewEnterName model.window (model.playerName |> Maybe.withDefault "")
-            , viewBoard model.window model.selectedBlocks (SameGame.board model.game)
+        RandomGame (Finished _) ->
+            [ Element.el [ Element.centerX, Font.size fontSize ] (viewScore (game model.game))
+            , viewBoard model.window model.selectedBlocks (SameGame.board (game model.game))
+            , Element.el [ Element.centerX, Font.size 16 ] (text "Only Game 1 supports Highscores")
             , footer
             ]
 
-        InProgress _ ->
-            [ Element.el [ Element.centerX, Font.size 40 ] (viewScore model.game)
-            , viewBoard model.window model.selectedBlocks (SameGame.board model.game)
+        RandomGame (InProgress _) ->
+            [ Element.el [ Element.centerX, Font.size 40 ] (viewScore (game model.game))
+            , viewBoard model.window model.selectedBlocks (SameGame.board (game model.game))
+            , Element.el [ Element.centerX, Font.size 16 ] (text "Only Game 1 supports Highscores")
+            , footer
+            ]
+
+        HighScoreGame (Finished _) ->
+            [ Element.el [ Element.centerX, Font.size fontSize ] (viewScore (game model.game))
+            , viewEnterName model.window (model.playerName |> Maybe.withDefault "")
+            , viewBoard model.window model.selectedBlocks (SameGame.board (game model.game))
+            , footer
+            ]
+
+        HighScoreGame (InProgress _) ->
+            [ Element.el [ Element.centerX, Font.size 40 ] (viewScore (game model.game))
+            , viewBoard model.window model.selectedBlocks (SameGame.board (game model.game))
             , footer
             ]
 
@@ -450,7 +527,7 @@ viewMain model =
 viewHighScore : Int -> HighScoreEntry -> Element Msg
 viewHighScore position highScore =
     viewTableEntry (String.fromInt (position + 1) ++ ".")
-        (String.slice 0 10 highScore.nickname)
+        highScore.nickname
         (String.fromInt highScore.score)
 
 
@@ -458,28 +535,35 @@ viewTableEntry : String -> String -> String -> Element Msg
 viewTableEntry first second third =
     Element.row [ Element.spacing 10, Element.width Element.fill, Font.size 25 ]
         [ Element.el [ Element.width (Element.px 70) ] (text first)
-        , Element.el [ Element.width Element.fill ] (text second)
+        , Element.el [ Element.width Element.fill, Element.htmlAttribute (Attributes.style "overflow" "hidden") ] (text second)
         , Element.el [ Element.width (Element.px 70) ] (text third)
         ]
 
 
 viewHighScores : Model -> Element Msg
 viewHighScores model =
+    let
+        spinner =
+            Element.el [ Element.centerX, Element.centerY ] (Element.html (Html.div [] [ Html.i [ Attributes.class "fas fa-spinner fa-spin" ] [] ]))
+
+        width =
+            toFloat model.window.width * 0.6 |> round |> min 280
+    in
     case model.highScores of
         NotAsked ->
             Element.el [ Font.size 18, Element.centerX ] (text "No data requested")
 
         Loading ->
-            Element.el [ Font.size 18, Element.centerX ] (text "Loading...")
+            Element.row [ Font.size 18, Element.centerX ] [ spinner, text " Loading..." ]
 
         Failure _ ->
             Element.el [ Font.size 18, Element.centerX ] (text "Failed to load")
 
-        Success highScores ->
-            Element.column [ Element.width Element.fill, Element.spacing 12 ] (viewTableEntry "Place" "Name" "Score" :: (highScores |> List.sortBy .score |> List.reverse |> List.indexedMap viewHighScore))
+        Success hs ->
+            Element.column [ Element.width (Element.px width), Element.centerX, Element.spacing 12 ] (viewTableEntry "Place" "Name" "Score" :: (hs |> List.sortBy .score |> List.reverse |> List.indexedMap viewHighScore))
 
-        Reloading highScores ->
-            Element.column [ Element.width Element.fill, Element.spacing 12 ] (viewTableEntry "Place" "Name" "Score" :: (highScores |> List.sortBy .score |> List.reverse |> List.indexedMap viewHighScore))
+        Reloading hs ->
+            Element.column [ Element.width (Element.px width), Element.centerX, Element.spacing 12 ] (viewTableEntry "Place" "Name" "Score" :: (hs |> List.sortBy .score |> List.reverse |> List.indexedMap viewHighScore))
 
 
 view : Model -> Html Msg
