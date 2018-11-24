@@ -103,7 +103,7 @@ init =
       , highScores = NotAsked
       , window = Window 0 0
       }
-    , Task.perform toMsg Browser.Dom.getViewport
+    , Cmd.batch [ Task.perform toMsg Browser.Dom.getViewport, highScores ]
     )
 
 
