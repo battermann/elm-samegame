@@ -3,6 +3,7 @@ module Main exposing (Model, Msg(..), init, main, update, view)
 import Browser
 import Browser.Dom
 import Browser.Events
+import Browser.Navigation
 import Element exposing (Element, text)
 import Element.Background as Background
 import Element.Border as Border
@@ -13,10 +14,15 @@ import Html exposing (Html)
 import Html.Attributes as Attributes
 import Http
 import Json.Decode as Decode
+import List.Extra
 import MD5
 import Random
 import SameGame exposing (Block, BlockState(..), Board, Color(..), Column, Game(..), Position)
 import Task
+import Url exposing (Url)
+import Url.Builder
+import Url.Parser exposing ((</>), (<?>), Parser(..))
+import Url.Parser.Query as Query
 
 
 
@@ -86,6 +92,8 @@ type alias Model =
     , playerName : Maybe String
     , highScores : RemoteData String (List HighScoreEntry)
     , window : Window
+    , location : Url
+    , key : Browser.Navigation.Key
     }
 
 
@@ -94,17 +102,31 @@ toMsg { viewport } =
     WindowResize (viewport.width |> round) (viewport.height |> round)
 
 
-init : ( Model, Cmd Msg )
-init =
-    ( { game = HighScoreGame (SameGame.newGame 1)
-      , selectedBlocks = []
-      , modal = Nothing
-      , playerName = Nothing
-      , highScores = NotAsked
-      , window = Window 0 0
-      }
-    , Cmd.batch [ Task.perform toMsg Browser.Dom.getViewport, highScores ]
-    )
+init : Url -> Browser.Navigation.Key -> ( Model, Cmd Msg )
+init url key =
+    initPage (Window 0 0) NotAsked url key (Cmd.batch [ Task.perform toMsg Browser.Dom.getViewport, highScores ])
+
+
+initPage : Window -> RemoteData String (List HighScoreEntry) -> Url -> Browser.Navigation.Key -> Cmd Msg -> ( Model, Cmd Msg )
+initPage window hs url key cmd =
+    let
+        makeModel g =
+            { game = g
+            , selectedBlocks = []
+            , modal = Nothing
+            , playerName = Nothing
+            , highScores = hs
+            , window = window
+            , location = url
+            , key = key
+            }
+    in
+    case extractRoute url of
+        Game 1 moves ->
+            ( makeModel (moves |> List.foldl play (HighScoreGame (SameGame.newGame 1))), cmd )
+
+        Game num moves ->
+            ( makeModel (moves |> List.foldl play (RandomGame (SameGame.newGame num))), cmd )
 
 
 type alias HighScoreEntry =
@@ -145,25 +167,22 @@ highScores =
 
 
 type Msg
-    = Click Position
-    | SelectGroup Position
+    = SelectGroup Position
     | Dialog (Maybe Modal)
-    | NewGame
     | HighScoresResult (Result Http.Error (List HighScoreEntry))
     | NameInputChange String
     | AddToLeaderBoard
     | AddToLeaderBoardResult (Result Http.Error String)
     | WindowResize Int Int
-    | RandomGameResult Game
+    | RandomGameResult Int
     | NewRandomGame
+    | ChangedUrl Url
+    | ClickedLink Browser.UrlRequest
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
-        Click position ->
-            ( { model | game = play position model.game, selectedBlocks = [] }, Cmd.none )
-
         SelectGroup position ->
             ( { model | selectedBlocks = SameGame.groupPositions (game model.game) position }, Cmd.none )
 
@@ -177,16 +196,6 @@ update msg model =
 
         Dialog modal ->
             ( { model | modal = modal }, Cmd.none )
-
-        NewGame ->
-            ( { model
-                | game = HighScoreGame (SameGame.newGame 1)
-                , selectedBlocks = []
-                , modal = Nothing
-                , playerName = Nothing
-              }
-            , Cmd.none
-            )
 
         HighScoresResult (Err _) ->
             ( { model | highScores = Failure "Http Error" }, Cmd.none )
@@ -213,18 +222,22 @@ update msg model =
         WindowResize width height ->
             ( { model | window = Window width height }, Cmd.none )
 
-        RandomGameResult g ->
-            ( { model
-                | game = RandomGame g
-                , selectedBlocks = []
-                , modal = Nothing
-                , playerName = Nothing
-              }
-            , Cmd.none
-            )
+        RandomGameResult gameNumber ->
+            ( model, Browser.Navigation.pushUrl model.key (Url.Builder.absolute [ "game", String.fromInt gameNumber ] []) )
 
         NewRandomGame ->
-            ( model, Random.generate (SameGame.newGame >> RandomGameResult) (Random.int -2147483648 2147483647) )
+            ( model, Random.generate RandomGameResult (Random.int -2147483648 2147483647) )
+
+        ClickedLink request ->
+            case request of
+                Browser.Internal url ->
+                    ( model, Browser.Navigation.pushUrl model.key (Url.toString url) )
+
+                Browser.External href ->
+                    ( model, Browser.Navigation.load href )
+
+        ChangedUrl url ->
+            initPage model.window model.highScores url model.key Cmd.none
 
 
 
@@ -253,24 +266,23 @@ viewColor a (Color color) =
             Background.color (Element.rgba255 50 50 50 a)
 
 
-viewCell : List Position -> Int -> Int -> BlockState -> Element Msg
-viewCell selectedBlocks columnIndex rowIndex cellState =
+viewCell : Url -> List Position -> Int -> Int -> BlockState -> Element Msg
+viewCell url selectedBlocks columnIndex rowIndex cellState =
     let
         position =
             { col = columnIndex, row = 14 - rowIndex }
     in
     case cellState of
         Filled color ->
-            Element.el
+            Element.link
                 ([ Element.height Element.fill
                  , Element.width Element.fill
                  , viewColor (alpha selectedBlocks position) color
-                 , Events.onClick (Click position)
                  , Events.onMouseEnter (SelectGroup position)
                  ]
                     ++ cursor selectedBlocks position
                 )
-                Element.none
+                { url = url |> addMove position, label = Element.none }
 
         Empty ->
             Element.el
@@ -298,11 +310,11 @@ alpha selectedGroup position =
         1.0
 
 
-viewColumn : List Position -> Int -> Column -> Element Msg
-viewColumn selectedBlocks index column =
+viewColumn : Url -> List Position -> Int -> Column -> Element Msg
+viewColumn url selectedBlocks index column =
     column
         |> List.reverse
-        |> List.indexedMap (viewCell selectedBlocks index)
+        |> List.indexedMap (viewCell url selectedBlocks index)
         |> Element.column
             [ Element.height Element.fill
             , Element.width Element.fill
@@ -319,8 +331,8 @@ boardWidth window =
         round (toFloat window.width * 0.9) |> min 300
 
 
-viewBoard : Window -> List Position -> Board -> Element Msg
-viewBoard window selectedBlocks board =
+viewBoard : Window -> Url -> List Position -> Board -> Element Msg
+viewBoard window url selectedBlocks board =
     Element.el
         [ Element.height (Element.px (boardWidth window))
         , Element.width (Element.px (boardWidth window))
@@ -335,7 +347,7 @@ viewBoard window selectedBlocks board =
             , Element.width Element.fill
             , Element.spacing 1
             ]
-            (List.indexedMap (viewColumn selectedBlocks) board)
+            (List.indexedMap (viewColumn url selectedBlocks) board)
 
 
 font : Element.Attribute msg
@@ -378,7 +390,7 @@ viewHeader model =
         ]
         [ Element.el [ Font.size 40, Element.centerX ] (text "SameGame")
         , Input.button [ Font.size fontSize, Element.centerX ] { label = text "New Game", onPress = Just NewRandomGame }
-        , Input.button [ Font.size fontSize, Element.centerX ] { label = text "Game 1", onPress = Just NewGame }
+        , Element.link [ Font.size fontSize, Element.centerX ] { url = "/game/1", label = text "Game 1" }
         , Input.button [ Font.size fontSize, Element.centerX ] { label = text "Highscores", onPress = Just (Dialog (Just HighScores)) }
         , Input.button [ Font.size fontSize, Element.centerX ] { label = text "Rules", onPress = Just (Dialog (Just Rules)) }
         ]
@@ -483,7 +495,7 @@ min limit i =
 footer : Element Msg
 footer =
     Element.column
-        [ Element.spacing 5, Element.width Element.fill, Font.size 16, Element.padding 10 ]
+        [ Element.spacing 5, Element.width Element.fill, Font.size 16, Element.padding 10, Background.color (Element.rgb255 102 102 102) ]
         [ Element.link [ Element.centerX ] { url = "http://elm-lang.org/", label = text "Created with Elm" }
         , Element.el [ Element.centerX ] <| Element.link [] { url = "https://github.com/battermann/elm-samegame", label = Element.row [] [ Element.el [ Element.centerX, Element.centerY ] (Element.html (Html.div [] [ Html.i [ Attributes.class "fab fa-github" ] [] ])), text " Source Code" ] }
         ]
@@ -498,14 +510,14 @@ viewMain model =
     case model.game of
         RandomGame (Finished _) ->
             [ Element.el [ Element.centerX, Font.size fontSize ] (viewScore (game model.game))
-            , viewBoard model.window model.selectedBlocks (SameGame.board (game model.game))
+            , viewBoard model.window model.location model.selectedBlocks (SameGame.board (game model.game))
             , Element.el [ Element.centerX, Font.size 16 ] (text "Only Game 1 supports Highscores")
             , footer
             ]
 
         RandomGame (InProgress _) ->
             [ Element.el [ Element.centerX, Font.size 40 ] (viewScore (game model.game))
-            , viewBoard model.window model.selectedBlocks (SameGame.board (game model.game))
+            , viewBoard model.window model.location model.selectedBlocks (SameGame.board (game model.game))
             , Element.el [ Element.centerX, Font.size 16 ] (text "Only Game 1 supports Highscores")
             , footer
             ]
@@ -513,13 +525,13 @@ viewMain model =
         HighScoreGame (Finished _) ->
             [ Element.el [ Element.centerX, Font.size fontSize ] (viewScore (game model.game))
             , viewEnterName model.window (model.playerName |> Maybe.withDefault "")
-            , viewBoard model.window model.selectedBlocks (SameGame.board (game model.game))
+            , viewBoard model.window model.location model.selectedBlocks (SameGame.board (game model.game))
             , footer
             ]
 
         HighScoreGame (InProgress _) ->
             [ Element.el [ Element.centerX, Font.size 40 ] (viewScore (game model.game))
-            , viewBoard model.window model.selectedBlocks (SameGame.board (game model.game))
+            , viewBoard model.window model.location model.selectedBlocks (SameGame.board (game model.game))
             , footer
             ]
 
@@ -566,11 +578,65 @@ viewHighScores model =
             Element.column [ Element.width (Element.px width), Element.centerX, Element.spacing 12 ] (viewTableEntry "Place" "Name" "Score" :: (hs |> List.sortBy .score |> List.reverse |> List.indexedMap viewHighScore))
 
 
-view : Model -> Html Msg
+view : Model -> Browser.Document Msg
 view model =
-    Element.layout (page model) <|
-        Element.column [ Element.centerX, Element.width Element.fill, Element.height Element.fill, Element.spacing 20 ]
-            (viewHeader model :: viewMain model)
+    { title = "SameGame"
+    , body =
+        List.singleton <|
+            Element.layout (page model) <|
+                Element.column [ Element.centerX, Element.width Element.fill, Element.height Element.fill, Element.spacing 20 ]
+                    (viewHeader model :: viewMain model)
+    }
+
+
+
+---- ROUTING ----
+
+
+type Route
+    = Game Int (List Position)
+
+
+extractRoute : Url -> Route
+extractRoute location =
+    case Url.Parser.parse matchRoute location of
+        Just route ->
+            route
+
+        Nothing ->
+            Game 1 []
+
+
+addMove : Position -> Url -> String
+addMove position url =
+    case extractRoute url of
+        Game num moves ->
+            Url.Builder.absolute [ "game", String.fromInt num ] ([ position ] |> List.append moves |> List.map encodeMove)
+
+
+encodeMove : Position -> Url.Builder.QueryParameter
+encodeMove { col, row } =
+    Url.Builder.string "move" (String.join "," [ String.fromInt col, String.fromInt row ])
+
+
+parseMove : String -> Maybe Position
+parseMove move =
+    case String.split "," move of
+        x :: y :: [] ->
+            Maybe.map2 Position (String.toInt x) (String.toInt y)
+
+        _ ->
+            Nothing
+
+
+parseMoves : List String -> List Position
+parseMoves =
+    List.filterMap parseMove
+
+
+matchRoute : Parser (Route -> a) a
+matchRoute =
+    Url.Parser.map Game (Url.Parser.s "game" </> Url.Parser.int <?> Query.custom "move" parseMoves)
 
 
 
@@ -579,9 +645,11 @@ view model =
 
 main : Program () Model Msg
 main =
-    Browser.element
+    Browser.application
         { view = view
         , init = \_ -> init
         , update = update
         , subscriptions = always <| Browser.Events.onResize WindowResize
+        , onUrlChange = ChangedUrl
+        , onUrlRequest = ClickedLink
         }
