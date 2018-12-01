@@ -207,14 +207,7 @@ update msg model =
             ( { model | playerName = Just name }, Cmd.none )
 
         AddToLeaderBoard ->
-            ( { model
-                | game = HighScoreGame (SameGame.newGame 1)
-                , selectedBlocks = []
-                , modal = Nothing
-                , playerName = Nothing
-              }
-            , add model
-            )
+            ( model, Cmd.batch [ add model, Browser.Navigation.pushUrl model.key (Url.Builder.absolute [ "game", "1" ] []) ] )
 
         AddToLeaderBoardResult _ ->
             ( model, Cmd.none )
@@ -242,6 +235,10 @@ update msg model =
 
 
 ---- VIEW ----
+
+
+backgroundColor =
+    Background.color (Element.rgb255 102 102 102)
 
 
 viewColor : Float -> Color -> Element.Attribute Msg
@@ -340,12 +337,14 @@ viewBoard window url selectedBlocks board =
         , Border.solid
         , Border.width 1
         , Element.padding 1
+        , backgroundColor
         ]
     <|
         Element.row
             [ Element.height Element.fill
             , Element.width Element.fill
             , Element.spacing 1
+            , backgroundColor
             ]
             (List.indexedMap (viewColumn url selectedBlocks) board)
 
@@ -362,7 +361,7 @@ viewScore : Game -> Element Msg
 viewScore g =
     case g of
         Finished gs ->
-            Element.column [ Element.centerX, Element.width Element.fill ]
+            Element.column [ Element.centerX, Element.width Element.fill, backgroundColor ]
                 [ Element.el [ Element.centerX ] (text "No more moves")
                 , Element.el [ Element.centerX ] (text ("Your final score is " ++ String.fromInt gs.score ++ " point(s)"))
                 ]
@@ -398,7 +397,7 @@ viewHeader model =
 
 viewModalDialog : String -> Element Msg -> Element Msg
 viewModalDialog heading content =
-    Element.el [ Background.color (Element.rgb255 102 102 102), Element.centerX, Element.padding 20, Element.width Element.fill ] (Element.column [ Element.spacing 20, Element.width Element.fill ] [ Element.el [ Element.centerX, Font.size 30 ] (text heading), content ])
+    Element.el [ backgroundColor, Element.centerX, Element.padding 20, Element.width Element.fill ] (Element.column [ Element.spacing 20, Element.width Element.fill ] [ Element.el [ Element.centerX, Font.size 30 ] (text heading), content ])
         |> Element.el
             [ Background.color (Element.rgba 0 0 0 0.5)
             , Element.width Element.fill
@@ -438,7 +437,7 @@ viewSelectedDialog model =
 
 page : Model -> List (Element.Attribute Msg)
 page model =
-    [ Background.color (Element.rgb255 102 102 102)
+    [ backgroundColor
     , Font.color (Element.rgb255 238 238 238)
     , Element.htmlAttribute <| Attributes.style "font-weight" "300"
     , font
@@ -468,7 +467,7 @@ viewEnterName window name =
             else
                 Element.el (Background.color (Element.rgb255 90 90 90) :: Font.color (Element.rgb255 150 150 150) :: attributes) (Element.el [ Element.centerX ] <| text "Submit Score")
     in
-    el [ Element.spacing 20, Element.centerX, Element.width (Element.px (boardWidth window)) ]
+    el [ Element.spacing 20, Element.centerX, Element.width (Element.px (boardWidth window)), backgroundColor ]
         [ Input.username [ Font.color (Element.rgb255 102 102 102), Element.width Element.fill ] { onChange = NameInputChange, text = name, placeholder = Just (Input.placeholder [] (text "Enter your name")), label = Input.labelHidden "Name" }
         , button
         ]
@@ -495,7 +494,7 @@ min limit i =
 footer : Element Msg
 footer =
     Element.column
-        [ Element.spacing 5, Element.width Element.fill, Font.size 16, Element.padding 10, Background.color (Element.rgb255 102 102 102) ]
+        [ Element.spacing 5, Element.width Element.fill, Font.size 16, Element.padding 10, backgroundColor ]
         [ Element.link [ Element.centerX ] { url = "http://elm-lang.org/", label = text "Created with Elm" }
         , Element.el [ Element.centerX ] <| Element.link [] { url = "https://github.com/battermann/elm-samegame", label = Element.row [] [ Element.el [ Element.centerX, Element.centerY ] (Element.html (Html.div [] [ Html.i [ Attributes.class "fab fa-github" ] [] ])), text " Source Code" ] }
         ]
@@ -511,19 +510,19 @@ viewMain model =
         RandomGame (Finished _) ->
             [ Element.el [ Element.centerX, Font.size fontSize ] (viewScore (game model.game))
             , viewBoard model.window model.location model.selectedBlocks (SameGame.board (game model.game))
-            , Element.el [ Element.centerX, Font.size 16 ] (text "Only Game 1 supports Highscores")
+            , Element.el [ Element.centerX, Font.size 16, backgroundColor ] (text "Only Game 1 supports Highscores")
             , footer
             ]
 
         RandomGame (InProgress _) ->
             [ Element.el [ Element.centerX, Font.size 40 ] (viewScore (game model.game))
             , viewBoard model.window model.location model.selectedBlocks (SameGame.board (game model.game))
-            , Element.el [ Element.centerX, Font.size 16 ] (text "Only Game 1 supports Highscores")
+            , Element.el [ Element.centerX, Font.size 16, backgroundColor ] (text "Only Game 1 supports Highscores")
             , footer
             ]
 
         HighScoreGame (Finished _) ->
-            [ Element.el [ Element.centerX, Font.size fontSize ] (viewScore (game model.game))
+            [ Element.el [ Element.centerX, Font.size fontSize, backgroundColor ] (viewScore (game model.game))
             , viewEnterName model.window (model.playerName |> Maybe.withDefault "")
             , viewBoard model.window model.location model.selectedBlocks (SameGame.board (game model.game))
             , footer
@@ -584,7 +583,7 @@ view model =
     , body =
         List.singleton <|
             Element.layout (page model) <|
-                Element.column [ Element.centerX, Element.width Element.fill, Element.height Element.fill, Element.spacing 20 ]
+                Element.column [ Element.centerX, Element.width Element.fill, Element.height Element.fill, Element.spacing 20, backgroundColor ]
                     (viewHeader model :: viewMain model)
     }
 
